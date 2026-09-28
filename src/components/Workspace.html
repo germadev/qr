@@ -1,0 +1,635 @@
+<script :setup>
+  const { QUIET_ZONE, qrMatrix, qrPath, qrPngBlob, qrSvg } = await import("../lib/qr.js")
+  const { formFromPayload, parsePayload, wifiPayload } = await import("../lib/payload.js")
+  const { cameraErrorMessage, openCamera, scanImageFile, scanVideoFrame } = await import("../lib/scan.js")
+  const { addToHistory, loadHistory, saveHistory } = await import("../lib/history.js")
+  const { downloadBlob, flasher } = await import("../lib/ui.js")
+  const ScanResult = await import("./ScanResult.html")
+
+  let mode = "text"
+  let text = ""
+  let wifi = { ssid: "", password: "", security: "WPA", hidden: false }
+  let ecc = "M"
+  let fg = "#000000"
+  let bg = "#ffffff"
+  let notice = ""
+
+  let camera = "off" // off | starting | on
+  let dragging = false
+  let error = ""
+  // the last code read and what the form encodes it as: its details stay
+  // while the form still holds it, and go away once it's edited into another
+  let read = null
+  let scans = loadHistory()
+
+  $: payload = mode === "wifi" ? (wifi.ssid ? wifiPayload(wifi) : "") : text
+  $: result = read && read.payload === payload ? read.text : ""
+
+  // only strings and numbers reach the store: the matrix itself stays a plain
+  // local, so drawing a large code doesn't go through the reactive proxy
+  const build = (content, level) => {
+    if (!content) return { path: "", size: 0, modules: 0, error: "" }
+    try {
+      const matrix = qrMatrix(content, { ecc: level })
+      return { path: qrPath(matrix), size: matrix.length + QUIET_ZONE * 2, modules: matrix.length, error: "" }
+    } catch {
+      return {
+        path: "",
+        size: 0,
+        modules: 0,
+        error: "Hay demasiado contenido para un código QR. Acórtalo o baja la corrección de errores.",
+      }
+    }
+  }
+
+  $: qr = build(payload, ecc)
+
+  const flash = flasher(message => { notice = message })
+  const pngBlob = () => qrPngBlob(qrMatrix(payload, { ecc }), { fg, bg })
+
+  const downloadPng = async () => downloadBlob(await pngBlob(), "qr.png")
+
+  const downloadSvg = () => {
+    const svg = qrSvg(qrMatrix(payload, { ecc }), { fg, bg })
+    downloadBlob(new Blob([svg], { type: "image/svg+xml" }), "qr.svg")
+  }
+
+  const canCopy = typeof ClipboardItem === "function" && typeof navigator.clipboard?.write === "function"
+
+  const copyImage = async () => {
+    try {
+      // the promise form keeps Safari's user-activation window open
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": pngBlob() })])
+      flash("Imagen copiada")
+    } catch {
+      flash("No se pudo copiar la imagen")
+    }
+  }
+
+  const canShare =
+    typeof navigator.canShare === "function" &&
+    navigator.canShare({ files: [new File([""], "qr.png", { type: "image/png" })] })
+
+  const share = async () => {
+    try {
+      const file = new File([await pngBlob()], "qr.png", { type: "image/png" })
+      await navigator.share({ files: [file], title: "Código QR" })
+    } catch (failure) {
+      if (failure?.name !== "AbortError") flash("No se pudo compartir")
+    }
+  }
+
+  // a code that is read fills in the form, so it's drawn where it would be
+  // generated and can be edited from there
+  const fill = content => {
+    const form = formFromPayload(content)
+    mode = form.mode
+    if (form.mode === "wifi") wifi = form.wifi
+    else text = form.text
+    read = { text: content, payload: form.mode === "wifi" ? wifiPayload(form.wifi) : form.text }
+  }
+
+  // on a phone the details of what was read render below the code, out of sight
+  const reveal = () =>
+    requestAnimationFrame(() => $self(".read-result")?.scrollIntoView({ behavior: "smooth", block: "nearest" }))
+
+  const show = content => {
+    stopCamera()
+    error = ""
+    fill(content)
+    reveal()
+  }
+
+  const found = content => {
+    scans = addToHistory($toRaw(scans), content)
+    saveHistory($toRaw(scans))
+    navigator.vibrate?.(60)
+    show(content)
+  }
+
+  // the stream, the timer and the frame canvas are bookkeeping, not state the
+  // template renders, so they live in this closure instead of the store
+  const { startCamera, stopCamera } = (() => {
+    let stream = null
+    let timer = null
+    const canvas = document.createElement("canvas")
+
+    const stopCamera = () => {
+      clearTimeout(timer)
+      stream?.getTracks().forEach(track => track.stop())
+      stream = null
+      const video = $self("video")
+      if (video) video.srcObject = null
+      camera = "off"
+    }
+
+    const tick = async video => {
+      let code = null
+      try {
+        code = await scanVideoFrame(video, canvas)
+      } catch {
+        // a frame that can't be read is just skipped
+      }
+      if (!stream) return // stopped while this frame was being decoded
+      if (code) {
+        found(code)
+      } else {
+        timer = setTimeout(() => tick(video), 150)
+      }
+    }
+
+    const startCamera = async () => {
+      if (camera !== "off") return
+      camera = "starting"
+      error = ""
+      try {
+        const media = await openCamera()
+        if (camera !== "starting") {
+          // stopped (a code pasted, the page hidden) while the permission prompt was open
+          media.getTracks().forEach(track => track.stop())
+          return
+        }
+        stream = media
+        const video = $self("video")
+        video.muted = true
+        video.srcObject = media
+        await video.play()
+        camera = "on"
+        tick(video)
+      } catch (failure) {
+        if (camera === "off") return // stopped on purpose while starting
+        stopCamera()
+        error = cameraErrorMessage(failure)
+      }
+    }
+
+    return { startCamera, stopCamera }
+  })()
+
+  // window and document outlive an instance that is detached or destroyed
+  // (and every hot reload in development): only the one on the page listens
+  const onPage = () => Boolean($self(".stage")?.isConnected)
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopCamera()
+  })
+
+  const scanFile = async file => {
+    if (!file?.type.startsWith("image/")) return
+    stopCamera()
+    error = ""
+    try {
+      const code = await scanImageFile(file)
+      if (code) found(code)
+      else error = "No se ha encontrado ningún código QR en la imagen."
+    } catch {
+      error = "No se ha podido abrir la imagen."
+    }
+  }
+
+  const onFileInput = event => {
+    scanFile(event.target.files?.[0])
+    event.target.value = "" // so choosing the same file again still fires `change`
+  }
+
+  const onDrop = event => {
+    dragging = false
+    scanFile(event.dataTransfer?.files?.[0])
+  }
+
+  // text pastes into the form as usual; an image is read
+  window.addEventListener("paste", event => {
+    if (!onPage()) return
+    const file = [...(event.clipboardData?.files ?? [])].find(item => item.type.startsWith("image/"))
+    if (file) {
+      event.preventDefault()
+      scanFile(file)
+    }
+  })
+
+  // the "Leer un QR" shortcut of the installed app
+  if (location.hash === "#leer") setTimeout(startCamera)
+
+  const clearHistory = () => {
+    scans = []
+    saveHistory([])
+  }
+
+  const formatDate = at => new Date(at).toLocaleString("es", { dateStyle: "short", timeStyle: "short" })
+</script>
+
+<div class="workspace">
+  <div class="card editor">
+    <div class="segmented" role="group" aria-label="Tipo de contenido">
+      <button type="button" :aria-pressed="mode === 'text'" @click="mode = 'text'">Texto o enlace</button>
+      <button type="button" :aria-pressed="mode === 'wifi'" @click="mode = 'wifi'">WiFi</button>
+    </div>
+
+    <label :if="mode === 'text'" class="field">
+      <span>Contenido</span>
+      <textarea rows="5" placeholder="Escribe un texto o pega un enlace…" :value="text"
+        @input="text = $event.target.value"></textarea>
+    </label>
+
+    <div :else class="fields">
+      <label class="field">
+        <span>Nombre de la red (SSID)</span>
+        <input type="text" name="ssid" autocomplete="off" autocapitalize="off" spellcheck="false"
+          :value="wifi.ssid" @input="wifi.ssid = $event.target.value">
+      </label>
+      <label class="field">
+        <span>Seguridad</span>
+        <select name="security" :value="wifi.security" @change="wifi.security = $event.target.value">
+          <option value="WPA">WPA/WPA2/WPA3</option>
+          <option value="WEP">WEP</option>
+          <option value="nopass">Sin contraseña</option>
+        </select>
+      </label>
+      <label :if="wifi.security !== 'nopass'" class="field">
+        <span>Contraseña</span>
+        <input type="text" name="password" autocomplete="off" autocapitalize="off" spellcheck="false"
+          :value="wifi.password" @input="wifi.password = $event.target.value">
+      </label>
+      <label class="check">
+        <input type="checkbox" name="hidden" :checked="wifi.hidden" @change="wifi.hidden = $event.target.checked">
+        Red oculta
+      </label>
+    </div>
+
+    <details class="options">
+      <summary>Opciones</summary>
+      <div class="options-grid">
+        <label class="field">
+          <span>Corrección de errores</span>
+          <select name="ecc" :value="ecc" @change="ecc = $event.target.value">
+            <option value="L">Baja · 7%</option>
+            <option value="M">Media · 15%</option>
+            <option value="Q">Alta · 25%</option>
+            <option value="H">Máxima · 30%</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Color</span>
+          <input type="color" name="fg" :value="fg" @input="fg = $event.target.value">
+        </label>
+        <label class="field">
+          <span>Fondo</span>
+          <input type="color" name="bg" :value="bg" @input="bg = $event.target.value">
+        </label>
+      </div>
+    </details>
+  </div>
+
+  <div class="card output">
+    <div class="stage" :class.empty="camera === 'off' && !qr.path" :class.live="camera !== 'off'"
+      :class.dragging="dragging"
+      @dragover.prevent="dragging = true" @dragleave="dragging = false" @drop.prevent="onDrop">
+      <video muted playsinline :class.is-hidden="camera === 'off'"></video>
+      <div :if="camera !== 'off'" class="frame" aria-hidden="true"></div>
+      <svg :elseif="qr.path" class="qr" :viewBox="`0 0 ${qr.size} ${qr.size}`" shape-rendering="crispEdges"
+        role="img" aria-label="Código QR generado">
+        <rect :width="qr.size" :height="qr.size" :fill="bg" />
+        <path :d="qr.path" :fill="fg" />
+      </svg>
+      <p :elseif="qr.error" class="message error">{{ qr.error }}</p>
+      <div :else class="message">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2M7 12h10" />
+        </svg>
+        <p>{{ mode === "wifi" ? "Escribe el nombre de la red para generar su código" : "Escribe algo para generar su código" }}</p>
+        <p class="hint">O lee uno: usa la cámara, abre una imagen, arrástrala aquí o pégala con Ctrl+V.</p>
+      </div>
+    </div>
+
+    <p class="meta">
+      {{ qr.path && camera === "off" ? `${qr.modules}×${qr.modules} módulos · ${payload.length} caracteres` : "" }}
+    </p>
+
+    <div class="actions">
+      <button type="button" class="btn primary" :disabled="!qr.path" @click="downloadPng">Descargar PNG</button>
+      <button type="button" class="btn" :disabled="!qr.path" @click="downloadSvg">SVG</button>
+      <button :if="canCopy" type="button" class="btn" :disabled="!qr.path" @click="copyImage">Copiar</button>
+      <button :if="canShare" type="button" class="btn" :disabled="!qr.path" @click="share">Compartir</button>
+    </div>
+
+    <div class="read" role="group" aria-label="Leer un código QR">
+      <button :if="camera === 'off'" type="button" class="btn" @click="startCamera">Usar la cámara</button>
+      <button :else type="button" class="btn" @click="stopCamera">
+        {{ camera === "starting" ? "Abriendo la cámara…" : "Detener la cámara" }}
+      </button>
+      <label class="btn">
+        Abrir imagen
+        <input type="file" accept="image/*" class="visually-hidden" @change="onFileInput">
+      </label>
+    </div>
+
+    <p :if="error" class="error" role="alert">{{ error }}</p>
+    <p class="notice" role="status">{{ notice }}</p>
+  </div>
+
+  <div :if="result" class="read-result">
+    <ScanResult :payload="result" />
+  </div>
+
+  <section :if="scans.length" class="card history">
+    <header>
+      <h2>Historial</h2>
+      <button type="button" class="btn small ghost" @click="clearHistory">Borrar</button>
+    </header>
+    <ul>
+      <li :each="item in scans" :key="item.text">
+        <button type="button" @click="show(item.text)">
+          <span class="kind">{{ parsePayload(item.text).label }}</span>
+          <span class="text">{{ item.text }}</span>
+          <time>{{ formatDate(item.at) }}</time>
+        </button>
+      </li>
+    </ul>
+  </section>
+</div>
+
+<style scoped>
+  .workspace {
+    display: grid;
+    gap: 16px;
+    align-items: start;
+  }
+
+  /* the code sits in its own column, next to the form, what was read and the
+     history; the last row takes up whatever the code is taller than those */
+  @media (min-width: 760px) {
+    .workspace {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 380px);
+      grid-template-rows: auto auto auto 1fr;
+    }
+
+    .editor,
+    .read-result,
+    .history {
+      grid-column: 1;
+    }
+
+    .output {
+      grid-column: 2;
+      grid-row: 1 / -1;
+      position: sticky;
+      top: 84px;
+    }
+  }
+
+  .editor {
+    display: grid;
+    gap: 16px;
+  }
+
+  .fields {
+    display: grid;
+    gap: 14px;
+  }
+
+  textarea {
+    min-height: 132px;
+    resize: vertical;
+  }
+
+  .options summary {
+    cursor: pointer;
+    color: var(--muted);
+    font-weight: 600;
+    padding: 4px 0;
+  }
+
+  .options-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 12px;
+    align-items: end;
+    margin-top: 12px;
+  }
+
+  input[type="color"] {
+    width: 64px;
+    height: 44px;
+    padding: 4px;
+    cursor: pointer;
+  }
+
+  .output {
+    display: grid;
+    gap: 12px;
+  }
+
+  .stage {
+    position: relative;
+    display: grid;
+    place-items: center;
+    aspect-ratio: 1;
+    border-radius: 12px;
+    background: var(--surface-2);
+    border: 2px dashed transparent;
+    overflow: hidden;
+    transition: border-color 0.15s, background 0.15s;
+  }
+
+  .stage.empty {
+    border-color: var(--border);
+  }
+
+  .stage.live {
+    background: #000;
+    border-style: solid;
+    border-color: transparent;
+  }
+
+  .stage.dragging {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .qr {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .frame {
+    position: absolute;
+    inset: 16%;
+    border-radius: 18px;
+    box-shadow: 0 0 0 100vmax rgb(0 0 0 / 0.35);
+    border: 3px solid rgb(255 255 255 / 0.9);
+    pointer-events: none;
+  }
+
+  .frame::after {
+    content: "";
+    position: absolute;
+    left: 8%;
+    right: 8%;
+    top: 8%;
+    height: 2px;
+    background: var(--accent);
+    box-shadow: 0 0 12px var(--accent);
+    animation: qr-scan-line 2s ease-in-out infinite alternate;
+  }
+
+  @keyframes qr-scan-line {
+    from { top: 8%; }
+    to { top: 92%; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .frame::after {
+      animation: none;
+    }
+  }
+
+  .message {
+    display: grid;
+    justify-items: center;
+    gap: 10px;
+    max-width: 320px;
+    margin: 0;
+    padding: 24px;
+    text-align: center;
+    color: var(--muted);
+  }
+
+  .message p {
+    margin: 0;
+  }
+
+  .message svg {
+    width: 56px;
+    height: 56px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+  }
+
+  .hint {
+    font-size: 0.9rem;
+  }
+
+  .message.error {
+    color: var(--danger);
+  }
+
+  .meta {
+    margin: 0;
+    min-height: 1.3em;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .actions .primary {
+    flex: 1 1 100%;
+  }
+
+  .actions .btn:not(.primary) {
+    flex: 1 1 0;
+  }
+
+  .read {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+
+  .read .btn {
+    flex: 1 1 auto;
+    white-space: nowrap;
+  }
+
+  .error {
+    margin: 0;
+    color: var(--danger);
+    text-align: center;
+  }
+
+  .notice {
+    margin: 0;
+    min-height: 1.3em;
+    text-align: center;
+    color: var(--accent);
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+
+  .history header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  .history h2 {
+    margin: 0;
+    font-size: 1rem;
+  }
+
+  .history ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .history li + li {
+    border-top: 1px solid var(--border);
+  }
+
+  .history li button {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 10px 4px;
+    border: 0;
+    background: none;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .history li button:hover {
+    background: var(--surface-2);
+  }
+
+  .kind {
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  .text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  time {
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+</style>
