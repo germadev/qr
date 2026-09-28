@@ -197,14 +197,50 @@
     scanFile(event.dataTransfer?.files?.[0])
   }
 
-  // text pastes into the form as usual; an image is read
+  $: stageEmpty = camera === "off" && !qr.path
+
+  // with nothing drawn, the stage opens an image like the "Abrir imagen" button
+  const onStageClick = () => {
+    if (stageEmpty) $self("input[type=file]").click()
+  }
+
+  // some browsers list a copied image only among the items, not the files
+  const pastedImage = data =>
+    [...(data?.files ?? [])].find(file => file.type.startsWith("image/")) ??
+    [...(data?.items ?? [])].find(item => item.kind === "file" && item.type.startsWith("image/"))?.getAsFile()
+
+  // text pastes into the form as usual; an image is read, wherever it lands
   window.addEventListener("paste", event => {
     if (!onPage()) return
-    const file = [...(event.clipboardData?.files ?? [])].find(item => item.type.startsWith("image/"))
+    const file = pastedImage(event.clipboardData)
     if (file) {
       event.preventDefault()
       scanFile(file)
+    } else if (event.target.closest?.(".paste-target")) {
+      error = "Lo que has pegado no es una imagen."
     }
+  })
+
+  const takesText = element =>
+    element?.isContentEditable ||
+    element instanceof HTMLTextAreaElement ||
+    (element instanceof HTMLInputElement && element.selectionStart !== null)
+
+  // Firefox and Safari only paste into something editable, so with the focus
+  // on a button, a checkbox or nowhere, Ctrl+V would never reach the page.
+  // Until the paste is done the focus goes to the stage's .paste-target
+  // (editable, but it cancels whatever would go in), and then back
+  document.addEventListener("keydown", event => {
+    const shortcut = (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "v"
+    if (!shortcut || takesText(document.activeElement) || !onPage()) return
+    const previous = document.activeElement
+    const target = $self(".paste-target")
+    target.focus({ preventScroll: true })
+    setTimeout(() => {
+      if (document.activeElement !== target) return
+      if (previous && previous !== document.body) previous.focus({ preventScroll: true })
+      else target.blur()
+    })
   })
 
   // the "Leer un QR" shortcut of the installed app
@@ -281,8 +317,8 @@
   </div>
 
   <div class="card output">
-    <div class="stage" :class.empty="camera === 'off' && !qr.path" :class.live="camera !== 'off'"
-      :class.dragging="dragging"
+    <div class="stage" :class.empty="stageEmpty" :class.live="camera !== 'off'" :class.dragging="dragging"
+      @click="onStageClick"
       @dragover.prevent="dragging = true" @dragleave="dragging = false" @drop.prevent="onDrop">
       <video muted playsinline :class.is-hidden="camera === 'off'"></video>
       <div :if="camera !== 'off'" class="frame" aria-hidden="true"></div>
@@ -297,8 +333,11 @@
           <path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2M7 12h10" />
         </svg>
         <p>{{ mode === "wifi" ? "Escribe el nombre de la red para generar su código" : "Escribe algo para generar su código" }}</p>
-        <p class="hint">O lee uno: usa la cámara, abre una imagen, arrástrala aquí o pégala con Ctrl+V.</p>
+        <p class="hint">O lee uno: pulsa aquí para abrir una imagen, arrástrala o pégala (Ctrl+V), o usa la cámara.</p>
       </div>
+      <div class="paste-target" contenteditable="true" tabindex="0" inputmode="none"
+        spellcheck="false" aria-label="Pega aquí la imagen de un código QR"
+        @beforeinput="$event.preventDefault()" @input="$event.target.replaceChildren()"></div>
     </div>
 
     <p class="meta">
@@ -441,9 +480,27 @@
     border-color: transparent;
   }
 
+  .stage:focus-within,
   .stage.dragging {
     border-color: var(--accent);
+  }
+
+  .stage.dragging {
     background: var(--accent-soft);
+  }
+
+  .paste-target {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    outline: none;
+    color: transparent;
+    caret-color: transparent;
+    cursor: default;
+  }
+
+  .stage.empty .paste-target {
+    cursor: pointer;
   }
 
   .qr {

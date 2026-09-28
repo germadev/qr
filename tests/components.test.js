@@ -28,12 +28,14 @@ const type = (element, value) => {
 }
 
 // jsdom has no DataTransfer: the event only needs the files
-const paste = (...files) => {
+const pasteInto = (target, ...files) => {
   const event = new Event("paste", { bubbles: true, cancelable: true })
   Object.defineProperty(event, "clipboardData", { value: { files } })
-  document.body.dispatchEvent(event)
+  target.dispatchEvent(event)
   return event
 }
+
+const paste = (...files) => pasteInto(document.body, ...files)
 
 const image = () => new File(["png"], "qr.png", { type: "image/png" })
 
@@ -138,9 +140,61 @@ describe("Workspace", () => {
   })
 
   it("leaves pasted text to the form", async () => {
-    await mount(Workspace)
+    const { host } = await mount(Workspace)
     expect(paste().defaultPrevented).toBe(false)
     expect(scanImageFile).not.toHaveBeenCalled()
+    expect(host.querySelector(".error[role=alert]")).toBeNull()
+  })
+
+  it("reads an image pasted into the stage, and says so when it isn't one", async () => {
+    vi.mocked(scanImageFile).mockResolvedValue("hola")
+    const { host } = await mount(Workspace)
+    const target = host.querySelector(".stage .paste-target")
+    expect(target.getAttribute("contenteditable")).toBe("true")
+
+    pasteInto(target)
+    await vi.waitFor(() => expect(host.querySelector(".error[role=alert]")?.textContent).toContain("no es una imagen"))
+
+    expect(pasteInto(target, image()).defaultPrevented).toBe(true)
+    await vi.waitFor(() => expect(host.querySelector("textarea").value).toBe("hola"))
+    expect(host.querySelector(".error[role=alert]")).toBeNull()
+  })
+
+  it("opens an image from the empty stage as well as from its button", async () => {
+    const { host } = await mount(Workspace)
+    // what opens the picker is a click on the file input
+    const picker = vi.fn()
+    host.querySelector("input[type=file]").addEventListener("click", picker)
+
+    host.querySelector(".read label.btn").click()
+    expect(picker).toHaveBeenCalledTimes(1)
+
+    host.querySelector(".stage.empty .paste-target").click()
+    expect(picker).toHaveBeenCalledTimes(2)
+
+    // not over a code that's drawn
+    type(host.querySelector("textarea"), "hola")
+    await vi.waitFor(() => expect(host.querySelector(".stage.empty")).toBeNull())
+    host.querySelector(".stage .paste-target").click()
+    expect(picker).toHaveBeenCalledTimes(2)
+  })
+
+  it("takes Ctrl+V to the stage wherever the focus is, and then gives it back", async () => {
+    const { host } = await mount(Workspace)
+    const pressCtrlV = element =>
+      element.dispatchEvent(new KeyboardEvent("keydown", { key: "v", ctrlKey: true, bubbles: true }))
+
+    const button = host.querySelector(".segmented button")
+    button.focus()
+    pressCtrlV(button)
+    expect(document.activeElement).toBe(host.querySelector(".paste-target"))
+    await vi.waitFor(() => expect(document.activeElement).toBe(button))
+
+    // a text field pastes on its own
+    const textarea = host.querySelector("textarea")
+    textarea.focus()
+    pressCtrlV(textarea)
+    expect(document.activeElement).toBe(textarea)
   })
 })
 
