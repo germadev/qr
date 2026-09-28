@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { parsePayload, wifiPayload } from "../src/lib/payload.js"
+import { formFromPayload, parsePayload, wifiPayload } from "../src/lib/payload.js"
 
 describe("wifiPayload", () => {
   it("builds the WIFI: format", () => {
@@ -74,5 +74,34 @@ describe("parsePayload", () => {
   it("falls back to plain text", () => {
     expect(parsePayload("hola mundo")).toEqual({ type: "text", label: "Texto" })
     expect(parsePayload("tel:")).toMatchObject({ type: "text" })
+  })
+})
+
+describe("formFromPayload", () => {
+  it("fills in the WiFi fields with a network", () => {
+    expect(formFromPayload("WIFI:S:casa;T:WEP;P:1234;H:true;;")).toEqual({
+      mode: "wifi",
+      wifi: { ssid: "casa", password: "1234", security: "WEP", hidden: true },
+    })
+    expect(formFromPayload("WIFI:S:abierta;;")).toEqual({
+      mode: "wifi",
+      wifi: { ssid: "abierta", password: "", security: "nopass", hidden: false },
+    })
+  })
+
+  it("takes every flavour of WPA as the form's WPA", () => {
+    for (const security of ["WPA", "wpa", "WPA2", "WPA3", "SAE"]) {
+      expect(formFromPayload(`WIFI:T:${security};S:casa;P:1234;;`).wifi).toMatchObject({ security: "WPA" })
+    }
+  })
+
+  it("keeps as text what the WiFi fields can't hold", () => {
+    const enterprise = "WIFI:T:WPA2-EAP;S:empresa;E:PEAP;I:ada;P:1234;;"
+    expect(formFromPayload(enterprise)).toEqual({ mode: "text", text: enterprise })
+  })
+
+  it("puts anything else in the text, as it is", () => {
+    expect(formFromPayload("https://example.com")).toEqual({ mode: "text", text: "https://example.com" })
+    expect(formFromPayload("  hola\n")).toEqual({ mode: "text", text: "  hola\n" })
   })
 })

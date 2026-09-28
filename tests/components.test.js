@@ -1,10 +1,14 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { Component79 } from "jq79"
-import Generator from "../src/components/Generator.html"
+import Workspace from "../src/components/Workspace.html"
 import ScanResult from "../src/components/ScanResult.html"
 import { qrMatrix, qrPath } from "../src/lib/qr.js"
 import { wifiPayload } from "../src/lib/payload.js"
+import { scanImageFile } from "../src/lib/scan.js"
+
+// jsdom can't load images: what a picture holds is up to each test
+vi.mock("../src/lib/scan.js", async importOriginal => ({ ...(await importOriginal()), scanImageFile: vi.fn() }))
 
 const mounted = []
 
@@ -23,43 +27,120 @@ const type = (element, value) => {
   element.dispatchEvent(new Event("input", { bubbles: true }))
 }
 
+// jsdom has no DataTransfer: the event only needs the files
+const paste = (...files) => {
+  const event = new Event("paste", { bubbles: true, cancelable: true })
+  Object.defineProperty(event, "clipboardData", { value: { files } })
+  document.body.dispatchEvent(event)
+  return event
+}
+
+const image = () => new File(["png"], "qr.png", { type: "image/png" })
+
+const drawn = content => qrPath(qrMatrix(content, { ecc: "M" }))
+
+beforeAll(() => {
+  // not in jsdom
+  Element.prototype.scrollIntoView = () => {}
+})
+
 afterEach(() => {
   mounted.splice(0).forEach(component => component.destroy())
   document.body.innerHTML = ""
+  localStorage.clear()
+  vi.mocked(scanImageFile).mockReset()
 })
 
-describe("Generator", () => {
+describe("Workspace", () => {
   it("draws the code for the text as it is typed", async () => {
-    const { host } = await mount(Generator)
+    const { host } = await mount(Workspace)
     expect(host.querySelector("svg.qr")).toBeNull()
     expect(host.querySelector(".btn.primary").disabled).toBe(true)
 
     type(host.querySelector("textarea"), "hola")
 
     await vi.waitFor(() => expect(host.querySelector("svg.qr path")).not.toBeNull())
-    expect(host.querySelector("svg.qr path").getAttribute("d")).toBe(qrPath(qrMatrix("hola", { ecc: "M" })))
+    expect(host.querySelector("svg.qr path").getAttribute("d")).toBe(drawn("hola"))
     expect(host.querySelector(".btn.primary").disabled).toBe(false)
     expect(host.querySelector(".meta").textContent).toContain("21×21")
   })
 
   it("encodes a WiFi network", async () => {
-    const { host } = await mount(Generator)
+    const { host } = await mount(Workspace)
     ;[...host.querySelectorAll(".segmented button")].find(button => button.textContent === "WiFi").click()
 
     await vi.waitFor(() => expect(host.querySelector("input[name=ssid]")).not.toBeNull())
     type(host.querySelector("input[name=ssid]"), "casa")
     type(host.querySelector("input[name=password]"), "1234")
 
-    const expected = qrPath(qrMatrix(wifiPayload({ ssid: "casa", password: "1234" }), { ecc: "M" }))
+    const expected = drawn(wifiPayload({ ssid: "casa", password: "1234" }))
     await vi.waitFor(() => expect(host.querySelector("svg.qr path")?.getAttribute("d")).toBe(expected))
   })
 
   it("explains when the content doesn't fit", async () => {
-    const { host } = await mount(Generator)
+    const { host } = await mount(Workspace)
     type(host.querySelector("textarea"), "x".repeat(5000))
 
     await vi.waitFor(() => expect(host.querySelector(".message.error")).not.toBeNull())
     expect(host.querySelector("svg.qr")).toBeNull()
+  })
+
+  it("fills in the form with a pasted code and draws it there", async () => {
+    vi.mocked(scanImageFile).mockResolvedValue("https://example.com")
+    const { host } = await mount(Workspace)
+
+    expect(paste(image()).defaultPrevented).toBe(true)
+
+    await vi.waitFor(() => expect(host.querySelector("textarea").value).toBe("https://example.com"))
+    await vi.waitFor(() => expect(host.querySelector("svg.qr path")?.getAttribute("d")).toBe(drawn("https://example.com")))
+    expect(host.querySelector(".read-result .badge").textContent).toBe("Enlace")
+    expect(host.querySelector(".history").textContent).toContain("https://example.com")
+  })
+
+  it("fills in the WiFi fields with a pasted network", async () => {
+    vi.mocked(scanImageFile).mockResolvedValue("WIFI:S:casa;T:WEP;P:1234;H:true;;")
+    const { host } = await mount(Workspace)
+
+    paste(image())
+
+    await vi.waitFor(() => expect(host.querySelector("input[name=ssid]")?.value).toBe("casa"))
+    expect(host.querySelector("select[name=security]").value).toBe("WEP")
+    expect(host.querySelector("input[name=password]").value).toBe("1234")
+    expect(host.querySelector("input[name=hidden]").checked).toBe(true)
+    const network = { ssid: "casa", password: "1234", security: "WEP", hidden: true }
+    await vi.waitFor(() => expect(host.querySelector("svg.qr path")?.getAttribute("d")).toBe(drawn(wifiPayload(network))))
+    expect(host.querySelector(".read-result .badge").textContent).toBe("Red WiFi")
+    // the instances of the earlier tests are gone from the page and don't read it too
+    expect(scanImageFile).toHaveBeenCalledTimes(1)
+  })
+
+  it("drops the details of what was read once the form is edited", async () => {
+    vi.mocked(scanImageFile).mockResolvedValue("hola")
+    const { host } = await mount(Workspace)
+
+    paste(image())
+    await vi.waitFor(() => expect(host.querySelector(".read-result")).not.toBeNull())
+
+    type(host.querySelector("textarea"), "hola mundo")
+    await vi.waitFor(() => expect(host.querySelector(".read-result")).toBeNull())
+    expect(host.querySelector("svg.qr path").getAttribute("d")).toBe(drawn("hola mundo"))
+  })
+
+  it("says so when a picture has no code", async () => {
+    vi.mocked(scanImageFile).mockResolvedValue(null)
+    const { host } = await mount(Workspace)
+    type(host.querySelector("textarea"), "hola")
+
+    paste(image())
+
+    await vi.waitFor(() => expect(host.querySelector(".error[role=alert]")).not.toBeNull())
+    expect(host.querySelector("textarea").value).toBe("hola")
+  })
+
+  it("leaves pasted text to the form", async () => {
+    await mount(Workspace)
+    expect(paste().defaultPrevented).toBe(false)
+    expect(scanImageFile).not.toHaveBeenCalled()
   })
 })
 

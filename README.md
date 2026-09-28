@@ -7,6 +7,9 @@ Hecha con [Vite](https://vite.dev) y [jq79](https://github.com/jgermade/jq79).
 
 ## Qué hace
 
+Generar y leer comparten la misma vista: el QR que se lee aparece donde se dibuja el generado, con el
+formulario relleno con lo que contiene, listo para editarlo o descargarlo.
+
 **Generar**
 
 - Texto o enlaces, y redes WiFi (`WIFI:T:WPA;S:…;P:…;;`, con el escapado que pide el formato).
@@ -16,9 +19,11 @@ Hecha con [Vite](https://vite.dev) y [jq79](https://github.com/jgermade/jq79).
 **Leer**
 
 - Con la cámara, abriendo una imagen, arrastrándola o pegándola (Ctrl+V).
+- Una red WiFi rellena los campos de WiFi (salvo las de empresa, WPA2-EAP…, que llevan campos que el
+  formulario no tiene); cualquier otra cosa, el texto tal cual.
 - Reconoce enlaces, WiFi, email, teléfono, SMS, ubicaciones y contactos, y ofrece la acción que toca
-  (abrir, llamar, copiar la contraseña…). Solo se enlazan esquemas seguros (`http`, `https`, `mailto`,
-  `tel`, `sms`): un QR con `javascript:…` se muestra como texto.
+  (abrir, llamar, copiar la contraseña…) mientras el formulario siga con lo leído. Solo se enlazan esquemas
+  seguros (`http`, `https`, `mailto`, `tel`, `sms`): un QR con `javascript:…` se muestra como texto.
 - Historial de las últimas lecturas, guardado en el dispositivo.
 - Usa el `BarcodeDetector` nativo cuando el navegador lo tiene y [jsQR](https://github.com/cozmo/jsQR)
   en el resto; jsQR va en un chunk aparte y solo se descarga si hace falta.
@@ -27,7 +32,7 @@ Hecha con [Vite](https://vite.dev) y [jq79](https://github.com/jgermade/jq79).
 
 - Instalable, con service worker ([vite-plugin-pwa](https://vite-pwa-org.netlify.app/)) que precachea
   toda la app: funciona sin conexión y se actualiza sola.
-- Accesos directos a «Leer» y «Generar» desde el icono.
+- Acceso directo «Leer un QR» desde el icono, que abre la app con la cámara en marcha.
 
 **Extensión para el navegador** (Chrome, Edge y Firefox)
 
@@ -71,10 +76,9 @@ La cámara necesita un contexto seguro: `localhost` vale, pero para probar desde
 ```
 index.html                 entrada de Vite
 src/main.js                monta App.html
-src/App.html               cabecera y pestañas
+src/App.html               cabecera y pie
 src/components/
-  Generator.html           generador
-  Scanner.html             lector (cámara, imagen, historial)
+  Workspace.html           generador y lector (formulario, cámara, imagen, historial)
   ScanResult.html          resultado de una lectura
 src/lib/
   qr.js                    matriz QR (uqr), SVG y PNG

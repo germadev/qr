@@ -1,16 +1,6 @@
 <script :setup="{ version }">
-  const Generator = await import("./components/Generator.html")
-  const Scanner = await import("./components/Scanner.html")
+  const Workspace = await import("./components/Workspace.html")
   const ExtensionLink = await import("./components/ExtensionLink.html")
-
-  const HASHES = { generate: "#generar", scan: "#leer" }
-
-  let tab = location.hash === HASHES.scan ? "scan" : "generate"
-
-  const select = name => {
-    tab = name
-    history.replaceState(null, "", HASHES[name])
-  }
 </script>
 
 <header class="topbar">
@@ -33,22 +23,10 @@
     </svg>
     <span>QR</span>
   </div>
-
-  <nav class="tabs" role="tablist" aria-label="Modo">
-    <button type="button" role="tab" id="tab-generate" aria-controls="panel-generate"
-      :aria-selected="tab === 'generate'" @click="select('generate')">Generar</button>
-    <button type="button" role="tab" id="tab-scan" aria-controls="panel-scan"
-      :aria-selected="tab === 'scan'" @click="select('scan')">Leer</button>
-  </nav>
 </header>
 
 <main class="content">
-  <section id="panel-generate" role="tabpanel" aria-labelledby="tab-generate" :class.is-hidden="tab !== 'generate'">
-    <Generator />
-  </section>
-  <section id="panel-scan" role="tabpanel" aria-labelledby="tab-scan" :class.is-hidden="tab !== 'scan'">
-    <Scanner :active="tab === 'scan'" />
-  </section>
+  <Workspace />
 </main>
 
 <footer class="footer">
@@ -65,7 +43,6 @@
     z-index: 10;
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 16px;
     padding: calc(10px + env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 10px max(16px, env(safe-area-inset-left));
     background: color-mix(in srgb, var(--bg) 85%, transparent);
@@ -90,32 +67,6 @@
 
   .logo-bg {
     fill: var(--accent);
-  }
-
-  .tabs {
-    display: flex;
-    padding: 3px;
-    border-radius: 999px;
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-  }
-
-  .tabs button {
-    min-width: 88px;
-    padding: 7px 16px;
-    border: 0;
-    border-radius: 999px;
-    background: transparent;
-    color: var(--muted);
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.15s, color 0.15s;
-  }
-
-  .tabs button[aria-selected="true"] {
-    background: var(--surface);
-    color: var(--text);
-    box-shadow: var(--shadow);
   }
 
   .content {

@@ -50,10 +50,8 @@ export default defineConfig({
           { src: "icon-512.png", sizes: "512x512", type: "image/png" },
           { src: "icon-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
         ],
-        shortcuts: [
-          { name: "Leer un QR", short_name: "Leer", url: "./#leer" },
-          { name: "Generar un QR", short_name: "Generar", url: "./#generar" },
-        ],
+        // generating and reading share one view: this one opens the camera
+        shortcuts: [{ name: "Leer un QR", short_name: "Leer", url: "./#leer" }],
       },
       workbox: {
         globPatterns: ["**/*.{js,css,html,svg,png,webmanifest}"],

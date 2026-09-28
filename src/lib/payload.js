@@ -141,3 +141,22 @@ export function parsePayload(raw) {
 
   return { type: "text", label: "Texto" }
 }
+
+// the generator's WiFi form only knows these; WPA2, WPA3 and SAE are all its WPA
+const FORM_SECURITY = [
+  [/^WPA\d?$|^SAE$/i, "WPA"],
+  [/^WEP$/i, "WEP"],
+  [/^nopass$/i, "nopass"],
+]
+
+// The generator's form filled in with a code that was read: a WiFi network
+// goes into the WiFi fields and anything else into the text, as it is. An
+// enterprise network (WPA2-EAP…) carries fields the form doesn't have, so it
+// stays text, which encodes it again unchanged
+export function formFromPayload(raw) {
+  const text = String(raw ?? "")
+  const info = parsePayload(text)
+  const security = info.type === "wifi" && FORM_SECURITY.find(([pattern]) => pattern.test(info.security))?.[1]
+  if (!security) return { mode: "text", text }
+  return { mode: "wifi", wifi: { ssid: info.ssid, password: info.password, security, hidden: info.hidden } }
+}
