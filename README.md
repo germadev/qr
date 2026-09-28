@@ -18,7 +18,9 @@ formulario relleno con lo que contiene, listo para editarlo o descargarlo.
 
 **Leer**
 
-- Con la cámara, abriendo una imagen, arrastrándola o pegándola (Ctrl+V).
+- Con la cámara, abriendo una imagen, arrastrándola o pegándola: Ctrl+V lee la imagen esté donde esté el
+  foco, y el recuadro del código también la acepta con «Pegar» (el menú contextual o, en el móvil, una
+  pulsación larga).
 - Una red WiFi rellena los campos de WiFi (salvo las de empresa, WPA2-EAP…, que llevan campos que el
   formulario no tiene); cualquier otra cosa, el texto tal cual.
 - Reconoce enlaces, WiFi, email, teléfono, SMS, ubicaciones y contactos, y ofrece la acción que toca
