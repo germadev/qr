@@ -160,6 +160,25 @@ describe("Workspace", () => {
     expect(host.querySelector(".error[role=alert]")).toBeNull()
   })
 
+  it("opens an image from the empty stage as well as from its button", async () => {
+    const { host } = await mount(Workspace)
+    // what opens the picker is a click on the file input
+    const picker = vi.fn()
+    host.querySelector("input[type=file]").addEventListener("click", picker)
+
+    host.querySelector(".read label.btn").click()
+    expect(picker).toHaveBeenCalledTimes(1)
+
+    host.querySelector(".stage.empty .paste-target").click()
+    expect(picker).toHaveBeenCalledTimes(2)
+
+    // not over a code that's drawn
+    type(host.querySelector("textarea"), "hola")
+    await vi.waitFor(() => expect(host.querySelector(".stage.empty")).toBeNull())
+    host.querySelector(".stage .paste-target").click()
+    expect(picker).toHaveBeenCalledTimes(2)
+  })
+
   it("takes Ctrl+V to the stage wherever the focus is, and then gives it back", async () => {
     const { host } = await mount(Workspace)
     const pressCtrlV = element =>
